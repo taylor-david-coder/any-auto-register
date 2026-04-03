@@ -68,11 +68,17 @@ class ChatGPTPlatform(BasePlatform):
                 def __init__(self):
                     self._acct = None
                     self._email = _fixed_email
+                    self._before_ids = set()
 
                 def create_email(self, config=None):
                     if self._email and self._acct and _fixed_email:
                         return {"email": self._email, "service_id": self._acct.account_id, "token": ""}
                     self._acct = _mailbox.get_email()
+                    get_current_ids = getattr(_mailbox, "get_current_ids", None)
+                    if callable(get_current_ids):
+                        self._before_ids = set(get_current_ids(self._acct) or [])
+                    else:
+                        self._before_ids = set()
                     generated_email = getattr(self._acct, "email", "")
                     if not self._email:
                         self._email = _resolve_email(generated_email)
@@ -95,6 +101,7 @@ class ChatGPTPlatform(BasePlatform):
                         self._acct,
                         keyword="",
                         timeout=timeout,
+                        before_ids=self._before_ids,
                         otp_sent_at=otp_sent_at,
                         exclude_codes=exclude_codes,
                     )
@@ -116,9 +123,14 @@ class ChatGPTPlatform(BasePlatform):
             class TempMailEmailService:
                 service_type = type("ST", (), {"value": "tempmail_lol"})()
 
+                def __init__(self):
+                    self._acct = None
+                    self._before_ids = set()
+
                 def create_email(self, config=None):
                     acct = _tmail.get_email()
                     self._acct = acct
+                    self._before_ids = set(_tmail.get_current_ids(acct) or [])
                     resolved_email = str(getattr(acct, "email", "") or "").strip()
                     if not resolved_email:
                         raise RuntimeError("tempmail_lol 返回空邮箱地址")
@@ -137,6 +149,7 @@ class ChatGPTPlatform(BasePlatform):
                         self._acct,
                         keyword="",
                         timeout=timeout,
+                        before_ids=self._before_ids,
                         otp_sent_at=otp_sent_at,
                         exclude_codes=exclude_codes,
                     )
