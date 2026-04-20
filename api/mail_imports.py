@@ -1,3 +1,5 @@
+from urllib.parse import quote
+
 from fastapi import APIRouter, HTTPException, Query
 
 from services.mail_imports import (
@@ -69,3 +71,48 @@ def batch_delete_mail_import_items(body: MailImportBatchDeleteRequest):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/gmail-alias-template")
+def get_gmail_alias_template(
+    base_email: str = Query(..., description="Gmail 主邮箱地址（例如 name@gmail.com）"),
+    count: int = Query(10, ge=1, le=500, description="生成条数"),
+    start_index: int = Query(1, ge=1, le=999999, description="起始序号"),
+    keyword: str = Query("OpenAI", description="取码关键词"),
+    bridge_base_url: str = Query(
+        "http://gmail-bridge:9090",
+        description="Gmail Bridge 基础地址（同 compose 网络建议使用服务名）",
+    ),
+):
+    normalized_email = str(base_email or "").strip().lower()
+    if "@" not in normalized_email:
+        raise HTTPException(status_code=400, detail="base_email 不是合法邮箱")
+
+    local, domain = normalized_email.split("@", 1)
+    if domain != "gmail.com" or not local:
+        raise HTTPException(status_code=400, detail="当前仅支持 gmail.com 邮箱")
+
+    base_url = str(bridge_base_url or "").strip().rstrip("/")
+    if not base_url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="bridge_base_url 必须以 http:// 或 https:// 开头")
+
+    safe_keyword = str(keyword or "").strip() or "OpenAI"
+    lines: list[str] = []
+    for idx in range(start_index, start_index + count):
+        alias = f"{local}+u{idx:03d}@{domain}"
+        encoded_alias = quote(alias, safe="")
+        line = (
+            f"{alias}----"
+            f"{base_url}/otp?to={encoded_alias}&kw={quote(safe_keyword, safe='')}"
+        )
+        lines.append(line)
+
+    return {
+        "base_email": normalized_email,
+        "count": count,
+        "start_index": start_index,
+        "keyword": safe_keyword,
+        "bridge_base_url": base_url,
+        "lines": lines,
+        "content": "\n".join(lines),
+    }

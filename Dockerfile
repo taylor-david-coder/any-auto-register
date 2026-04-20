@@ -1,6 +1,7 @@
-# syntax=docker/dockerfile:1.7
+ARG BASE_NODE_IMAGE=node:20-bookworm-slim
+ARG BASE_PYTHON_IMAGE=python:3.12-slim
 
-FROM node:20-bookworm-slim AS frontend-builder
+FROM ${BASE_NODE_IMAGE} AS frontend-builder
 
 WORKDIR /app/frontend
 
@@ -11,10 +12,11 @@ COPY frontend/ ./
 RUN npm run build
 
 
-FROM python:3.12-slim AS runtime
+FROM ${BASE_PYTHON_IMAGE} AS runtime
 
 ARG CAMOUFOX_VERSION=135.0.1
 ARG CAMOUFOX_RELEASE=beta.24
+ARG DEBIAN_MIRROR=deb.debian.org
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -35,12 +37,25 @@ WORKDIR /app
 COPY requirements.txt ./
 COPY scripts/install_camoufox.py /tmp/install_camoufox.py
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN set -eux; \
+    sed -i "s|deb.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
+    apt-get -o Acquire::Retries=5 -o Acquire::ForceIPv4=true update; \
+    apt-get -o Acquire::Retries=5 -o Acquire::ForceIPv4=true install -y --no-install-recommends \
         curl ca-certificates \
-        libgtk-3-0 libx11-xcb1 libasound2 xvfb xauth \
-    && curl -fsSL https://go.dev/dl/go1.24.2.linux-amd64.tar.gz | tar -C /usr/local -xz \
-    && curl -LsSf https://astral.sh/uv/install.sh | sh \
-    && rm -rf /var/lib/apt/lists/*
+        libgtk-3-0 libx11-xcb1 libasound2 xvfb xauth; \
+    for attempt in 1 2 3; do \
+      curl -fsSL https://go.dev/dl/go1.24.2.linux-amd64.tar.gz | tar -C /usr/local -xz && break; \
+      if [ "$attempt" -eq 3 ]; then exit 1; fi; \
+      echo "go download failed, retrying ($attempt/3)..." >&2; \
+      sleep 3; \
+    done; \
+    for attempt in 1 2 3; do \
+      curl -LsSf https://astral.sh/uv/install.sh | sh && break; \
+      if [ "$attempt" -eq 3 ]; then exit 1; fi; \
+      echo "uv install script failed, retrying ($attempt/3)..." >&2; \
+      sleep 3; \
+    done; \
+    rm -rf /var/lib/apt/lists/*
 
 ENV PATH="/usr/local/go/bin:/root/.local/bin:${PATH}"
 
@@ -62,7 +77,7 @@ RUN pip install --upgrade pip \
 COPY . .
 COPY --from=frontend-builder /app/static /app/static
 
-RUN apt-get update && apt-get install -y --no-install-recommends dos2unix git iproute2 procps \
+RUN apt-get -o Acquire::Retries=5 -o Acquire::ForceIPv4=true update && apt-get -o Acquire::Retries=5 -o Acquire::ForceIPv4=true install -y --no-install-recommends dos2unix git iproute2 procps \
     && dos2unix /app/docker/entrypoint.sh \
     && chmod +x /app/docker/entrypoint.sh \
     && mkdir -p /runtime /runtime/logs /runtime/smstome_used /_ext_targets \

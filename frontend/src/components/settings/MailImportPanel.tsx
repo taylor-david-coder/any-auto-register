@@ -63,6 +63,16 @@ interface MailImportResult {
   meta: Record<string, unknown>
 }
 
+interface GmailAliasTemplateResponse {
+  base_email: string
+  count: number
+  start_index: number
+  keyword: string
+  bridge_base_url: string
+  lines: string[]
+  content: string
+}
+
 const SUPPORTED_IMPORT_TYPES: MailImportProviderType[] = ['applemail', 'microsoft']
 const SUPPORTED_SELECTION_TYPES: MailImportSelectionType[] = ['applemail', 'microsoft', 'outlook', 'hotmail', 'mailapi']
 
@@ -232,6 +242,13 @@ export default function MailImportPanel({ form }: MailImportPanelProps) {
   const [aliasSplitEnabled, setAliasSplitEnabled] = useState(false)
   const [aliasSplitCount, setAliasSplitCount] = useState(5)
   const [aliasIncludeOriginal, setAliasIncludeOriginal] = useState(false)
+  const [gmailBaseEmail, setGmailBaseEmail] = useState('')
+  const [gmailAliasCount, setGmailAliasCount] = useState(10)
+  const [gmailAliasStartIndex, setGmailAliasStartIndex] = useState(1)
+  const [gmailKeyword, setGmailKeyword] = useState('OpenAI')
+  const [gmailBridgeBaseUrl, setGmailBridgeBaseUrl] = useState('http://gmail-bridge:9090')
+  const [generatingGmailTemplate, setGeneratingGmailTemplate] = useState(false)
+  const [authorizingGoogle, setAuthorizingGoogle] = useState(false)
 
   const providerMap = useMemo(
     () => new Map(providers.map((provider) => [provider.type, provider])),
@@ -389,6 +406,75 @@ export default function MailImportPanel({ form }: MailImportPanelProps) {
       mail_provider: 'mail_import',
       mail_import_source: value === 'applemail' ? 'applemail' : 'microsoft',
     })
+  }
+
+  const handleGenerateGmailAliasTemplate = async () => {
+    const normalizedEmail = String(gmailBaseEmail || '').trim().toLowerCase()
+    if (!normalizedEmail) {
+      message.warning('请先填写 Gmail 主邮箱')
+      return
+    }
+
+    setGeneratingGmailTemplate(true)
+    try {
+      const params = new URLSearchParams({
+        base_email: normalizedEmail,
+        count: String(gmailAliasCount),
+        start_index: String(gmailAliasStartIndex),
+        keyword: String(gmailKeyword || '').trim() || 'OpenAI',
+        bridge_base_url: String(gmailBridgeBaseUrl || '').trim() || 'http://gmail-bridge:9090',
+      })
+      const response = await apiFetch(`/mail-imports/gmail-alias-template?${params.toString()}`) as GmailAliasTemplateResponse
+      setSelectedType('mailapi')
+      setContent(response.content)
+      message.success(`已生成 ${response.count} 条 Gmail 别名导入模板`)
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : '生成 Gmail 别名模板失败'
+      message.error(detail)
+    } finally {
+      setGeneratingGmailTemplate(false)
+    }
+  }
+
+  const handleStartGoogleOAuth = () => {
+    const rawBaseUrl = String(gmailBridgeBaseUrl || '').trim().replace(/\/$/, '')
+    if (!rawBaseUrl.startsWith('http://') && !rawBaseUrl.startsWith('https://')) {
+      message.error('Bridge 地址格式无效，请以 http:// 或 https:// 开头')
+      return
+    }
+
+    let browserBaseUrl = rawBaseUrl
+    try {
+      const parsed = new URL(rawBaseUrl)
+      if (parsed.hostname === 'gmail-bridge') {
+        parsed.hostname = window.location.hostname || '127.0.0.1'
+        browserBaseUrl = parsed.toString().replace(/\/$/, '')
+      }
+    } catch {
+      message.error('Bridge 地址格式无效，无法发起授权')
+      return
+    }
+
+    const redirectUri = `${browserBaseUrl}/auth/callback`
+    const authUrl = `${browserBaseUrl}/auth/start?redirect_uri=${encodeURIComponent(redirectUri)}`
+    setAuthorizingGoogle(true)
+    window.open(authUrl, '_blank', 'noopener,noreferrer,width=540,height=760')
+
+    window.setTimeout(async () => {
+      try {
+        const response = await fetch(`${browserBaseUrl}/auth/status`)
+        const payload = await response.json() as { authorized?: boolean }
+        if (payload.authorized) {
+          message.success('Google 授权完成，Gmail Bridge 已可读取邮箱')
+        } else {
+          message.info('授权窗口已打开，请完成登录授权后再回来导入')
+        }
+      } catch {
+        message.info('授权窗口已打开，请完成登录授权后再回来导入')
+      } finally {
+        setAuthorizingGoogle(false)
+      }
+    }, 2500)
   }
 
   const handleDelete = async (item: MailImportSnapshotItem) => {
@@ -671,6 +757,66 @@ export default function MailImportPanel({ form }: MailImportPanelProps) {
                 <Switch checked={aliasIncludeOriginal} onChange={setAliasIncludeOriginal} />
               </Space>
             ) : null}
+          </div>
+        ) : null}
+
+        {selectedApiType === 'microsoft' ? (
+          <div
+            style={{
+              border: '1px dashed rgba(24,144,255,0.45)',
+              borderRadius: 8,
+              padding: 12,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+            }}
+          >
+            <Typography.Text strong>Gmail 别名模板生成（MailAPI URL）</Typography.Text>
+            <Typography.Text type="secondary">
+              一键生成“邮箱----mailapi_url”导入内容，生成后会自动填入下方文本框并切换到 MailAPI 视图。
+            </Typography.Text>
+            <Space wrap>
+              <Input
+                style={{ width: 320 }}
+                placeholder="Gmail 主邮箱，例如 david@gmail.com"
+                value={gmailBaseEmail}
+                onChange={(event) => setGmailBaseEmail(event.target.value)}
+              />
+              <InputNumber
+                min={1}
+                max={500}
+                value={gmailAliasCount}
+                onChange={(value) => setGmailAliasCount(Math.max(1, Math.min(500, Number(value || 10))))}
+                addonBefore="数量"
+              />
+              <InputNumber
+                min={1}
+                max={999999}
+                value={gmailAliasStartIndex}
+                onChange={(value) => setGmailAliasStartIndex(Math.max(1, Math.min(999999, Number(value || 1))))}
+                addonBefore="起始序号"
+              />
+            </Space>
+            <Space wrap>
+              <Input
+                style={{ width: 200 }}
+                placeholder="关键词（默认 OpenAI）"
+                value={gmailKeyword}
+                onChange={(event) => setGmailKeyword(event.target.value)}
+              />
+              <Input
+                style={{ width: 320 }}
+                placeholder="Bridge 地址，例如 http://gmail-bridge:9090"
+                value={gmailBridgeBaseUrl}
+                onChange={(event) => setGmailBridgeBaseUrl(event.target.value)}
+              />
+              <Button type="primary" onClick={() => void handleGenerateGmailAliasTemplate()} loading={generatingGmailTemplate}>
+                生成 Gmail 导入模板
+              </Button>
+              <Button onClick={handleStartGoogleOAuth} loading={authorizingGoogle}>
+                Google 登录授权
+              </Button>
+            </Space>
           </div>
         ) : null}
 
