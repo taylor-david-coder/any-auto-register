@@ -7,6 +7,10 @@ services:
         BASE_NODE_IMAGE: ${BASE_NODE_IMAGE:-node:20-bookworm-slim}
         BASE_PYTHON_IMAGE: ${BASE_PYTHON_IMAGE:-python:3.12-slim}
         DEBIAN_MIRROR: ${DEBIAN_MIRROR:-deb.debian.org}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
+        PLAYWRIGHT_DOWNLOAD_HOST: ${PLAYWRIGHT_DOWNLOAD_HOST:-}
+        SKIP_PLAYWRIGHT_INSTALL: ${SKIP_PLAYWRIGHT_INSTALL:-0}
         CAMOUFOX_VERSION: ${CAMOUFOX_VERSION:-135.0.1}
         CAMOUFOX_RELEASE: ${CAMOUFOX_RELEASE:-beta.24}
     container_name: any-auto-register

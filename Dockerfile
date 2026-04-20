@@ -17,10 +17,17 @@ FROM ${BASE_PYTHON_IMAGE} AS runtime
 ARG CAMOUFOX_VERSION=135.0.1
 ARG CAMOUFOX_RELEASE=beta.24
 ARG DEBIAN_MIRROR=deb.debian.org
+ARG PIP_INDEX_URL=https://pypi.org/simple
+ARG PIP_TRUSTED_HOST=
+ARG PLAYWRIGHT_DOWNLOAD_HOST=
+ARG SKIP_PLAYWRIGHT_INSTALL=0
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    PIP_INDEX_URL=${PIP_INDEX_URL} \
+    PIP_TRUSTED_HOST=${PIP_TRUSTED_HOST} \
+    PLAYWRIGHT_DOWNLOAD_HOST=${PLAYWRIGHT_DOWNLOAD_HOST} \
     HOST=0.0.0.0 \
     PORT=8000 \
     APP_CONDA_ENV=docker \
@@ -59,20 +66,33 @@ RUN set -eux; \
 
 ENV PATH="/usr/local/go/bin:/root/.local/bin:${PATH}"
 
-RUN pip install --upgrade pip \
-    && pip install -r requirements.txt \
-    && installed=0 \
-    && for attempt in 1 2 3; do \
-         if python -m playwright install --with-deps chromium firefox; then \
-           installed=1; \
-           break; \
-         fi; \
-         if [ "$attempt" -eq 3 ]; then break; fi; \
-         echo "playwright browser install failed, retrying ($attempt/3)..." >&2; \
-         sleep 5; \
-       done \
-    && [ "$installed" -eq 1 ] \
-    && CAMOUFOX_VERSION="$CAMOUFOX_VERSION" CAMOUFOX_RELEASE="$CAMOUFOX_RELEASE" python /tmp/install_camoufox.py
+RUN set -eux; \
+    pip install --upgrade pip; \
+    for attempt in 1 2 3; do \
+      pip install -r requirements.txt && break; \
+      if [ "$attempt" -eq 3 ]; then exit 1; fi; \
+      echo "pip install requirements failed, retrying ($attempt/3)..." >&2; \
+      sleep 5; \
+    done; \
+    if [ "$SKIP_PLAYWRIGHT_INSTALL" != "1" ]; then \
+      installed=0; \
+      for attempt in 1 2 3; do \
+        if python -m playwright install chromium firefox; then \
+          installed=1; \
+          break; \
+        fi; \
+        if [ "$attempt" -eq 3 ]; then break; fi; \
+        echo "playwright browser install failed, retrying ($attempt/3)..." >&2; \
+        sleep 5; \
+      done; \
+      [ "$installed" -eq 1 ]; \
+    fi; \
+    for attempt in 1 2 3; do \
+      CAMOUFOX_VERSION="$CAMOUFOX_VERSION" CAMOUFOX_RELEASE="$CAMOUFOX_RELEASE" python /tmp/install_camoufox.py && break; \
+      if [ "$attempt" -eq 3 ]; then exit 1; fi; \
+      echo "camoufox install failed, retrying ($attempt/3)..." >&2; \
+      sleep 5; \
+    done
 
 COPY . .
 COPY --from=frontend-builder /app/static /app/static
