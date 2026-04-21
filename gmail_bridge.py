@@ -52,20 +52,43 @@ _STATE_LOCK = threading.Lock()
 _LAST_SERVED_INTERNAL_DATE_MS: Dict[str, int] = {}
 
 
+def _resolve_credentials_file() -> str:
+    """解析 credentials 文件路径；若传入目录则自动拼接 credentials.json。"""
+    configured = str(os.getenv("GMAIL_CREDENTIALS_FILE", CREDENTIALS_FILE) or "").strip()
+    path = configured or CREDENTIALS_FILE
+    if os.path.isdir(path):
+        path = os.path.join(path, "credentials.json")
+    return path
+
+
+def _resolve_token_file() -> str:
+    """解析 token 文件路径；若路径是目录，则自动落到目录下 token.json。"""
+    configured = str(os.getenv("GMAIL_TOKEN_FILE", TOKEN_FILE) or "").strip()
+    path = configured or TOKEN_FILE
+    if os.path.isdir(path):
+        path = os.path.join(path, "token.json")
+    return path
+
+
 def _save_token(creds: Credentials) -> None:
-    with open(TOKEN_FILE, "w", encoding="utf-8") as f:
+    token_file = _resolve_token_file()
+    parent_dir = os.path.dirname(token_file)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
+    with open(token_file, "w", encoding="utf-8") as f:
         f.write(creds.to_json())
 
 
 def _load_credentials() -> Credentials:
     creds: Optional[Credentials] = None
+    token_file = _resolve_token_file()
 
-    if os.path.exists(TOKEN_FILE):
-        creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+    if os.path.exists(token_file) and os.path.isfile(token_file):
+        creds = Credentials.from_authorized_user_file(token_file, SCOPES)
 
     if not creds:
         raise RuntimeError(
-            f"未找到 {TOKEN_FILE}，请先执行: python gmail_bridge.py --init-auth"
+            f"未找到 {token_file}，请先执行: python gmail_bridge.py --init-auth"
         )
 
     if creds.expired and creds.refresh_token:
@@ -85,13 +108,14 @@ def _gmail_service():
 
 def init_auth_once() -> None:
     """首次授权：弹浏览器登录 Google，生成 token.json"""
-    if not os.path.exists(CREDENTIALS_FILE):
-        raise FileNotFoundError(f"缺少 {CREDENTIALS_FILE}")
+    credentials_file = _resolve_credentials_file()
+    if not os.path.exists(credentials_file) or not os.path.isfile(credentials_file):
+        raise FileNotFoundError(f"缺少 {credentials_file}")
 
-    flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
+    flow = InstalledAppFlow.from_client_secrets_file(credentials_file, SCOPES)
     creds = flow.run_local_server(port=0)
     _save_token(creds)
-    print(f"[OK] 授权完成，已生成 {TOKEN_FILE}")
+    print(f"[OK] 授权完成，已生成 {_resolve_token_file()}")
 
 
 def _cleanup_oauth_states() -> None:
@@ -121,10 +145,11 @@ def _pop_oauth_state(state: str) -> Dict[str, Any] | None:
 
 
 def _build_web_oauth_flow(redirect_uri: str) -> Flow:
-    if not os.path.exists(CREDENTIALS_FILE):
-        raise FileNotFoundError(f"缺少 {CREDENTIALS_FILE}")
+    credentials_file = _resolve_credentials_file()
+    if not os.path.exists(credentials_file) or not os.path.isfile(credentials_file):
+        raise FileNotFoundError(f"缺少 {credentials_file}")
     flow = Flow.from_client_secrets_file(
-        CREDENTIALS_FILE,
+        credentials_file,
         SCOPES,
         autogenerate_code_verifier=True,
     )
@@ -266,8 +291,9 @@ def health() -> str:
 
 @app.get("/auth/status")
 def auth_status() -> dict[str, Any]:
-    if not os.path.exists(TOKEN_FILE):
-        return {"authorized": False, "message": "未检测到 token.json"}
+    token_file = _resolve_token_file()
+    if not os.path.exists(token_file) or not os.path.isfile(token_file):
+        return {"authorized": False, "message": f"未检测到 {token_file}"}
     try:
         _load_credentials()
         return {"authorized": True, "message": "已授权"}

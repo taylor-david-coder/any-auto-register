@@ -1,12 +1,29 @@
 ARG BASE_NODE_IMAGE=node:20-bookworm-slim
 ARG BASE_PYTHON_IMAGE=python:3.12-slim
+ARG NPM_REGISTRY=https://registry.npmjs.org
+ARG NPM_FETCH_RETRIES=5
 
 FROM ${BASE_NODE_IMAGE} AS frontend-builder
+
+ARG NPM_REGISTRY=https://registry.npmjs.org
+ARG NPM_FETCH_RETRIES=5
 
 WORKDIR /app/frontend
 
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci
+RUN set -eux; \
+    npm config set registry "${NPM_REGISTRY}"; \
+    npm config set fetch-retries "${NPM_FETCH_RETRIES}"; \
+    npm config set fetch-retry-factor 2; \
+    npm config set fetch-retry-mintimeout 20000; \
+    npm config set fetch-retry-maxtimeout 120000; \
+    npm config set fetch-timeout 120000; \
+    for attempt in 1 2 3; do \
+      npm ci && break; \
+      if [ "$attempt" -eq 3 ]; then exit 1; fi; \
+      echo "npm ci failed, retrying ($attempt/3)..." >&2; \
+      sleep 5; \
+    done
 
 COPY frontend/ ./
 RUN npm run build
@@ -21,6 +38,7 @@ ARG PIP_INDEX_URL=https://pypi.org/simple
 ARG PIP_TRUSTED_HOST=
 ARG PLAYWRIGHT_DOWNLOAD_HOST=
 ARG SKIP_PLAYWRIGHT_INSTALL=0
+ARG SKIP_CAMOUFOX_INSTALL=0
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -47,21 +65,23 @@ COPY scripts/install_camoufox.py /tmp/install_camoufox.py
 RUN set -eux; \
     sed -i "s|deb.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
     apt-get -o Acquire::Retries=5 -o Acquire::ForceIPv4=true update; \
-    apt-get -o Acquire::Retries=5 -o Acquire::ForceIPv4=true install -y --no-install-recommends \
-        curl ca-certificates \
-        libgtk-3-0 libx11-xcb1 libasound2 xvfb xauth; \
-    for attempt in 1 2 3; do \
-      curl -fsSL https://go.dev/dl/go1.24.2.linux-amd64.tar.gz | tar -C /usr/local -xz && break; \
-      if [ "$attempt" -eq 3 ]; then exit 1; fi; \
-      echo "go download failed, retrying ($attempt/3)..." >&2; \
-      sleep 3; \
-    done; \
-    for attempt in 1 2 3; do \
-      curl -LsSf https://astral.sh/uv/install.sh | sh && break; \
-      if [ "$attempt" -eq 3 ]; then exit 1; fi; \
-      echo "uv install script failed, retrying ($attempt/3)..." >&2; \
-      sleep 3; \
-    done; \
+    apt-get -o Acquire::Retries=5 -o Acquire::ForceIPv4=true install -y --no-install-recommends curl ca-certificates xvfb xauth; \
+    if [ "$SKIP_PLAYWRIGHT_INSTALL" != "1" ] || [ "$SKIP_CAMOUFOX_INSTALL" != "1" ]; then \
+      apt-get -o Acquire::Retries=5 -o Acquire::ForceIPv4=true install -y --no-install-recommends \
+        libgtk-3-0 libx11-xcb1 libasound2; \
+      for attempt in 1 2 3; do \
+        curl -fsSL https://go.dev/dl/go1.24.2.linux-amd64.tar.gz | tar -C /usr/local -xz && break; \
+        if [ "$attempt" -eq 3 ]; then exit 1; fi; \
+        echo "go download failed, retrying ($attempt/3)..." >&2; \
+        sleep 3; \
+      done; \
+      for attempt in 1 2 3; do \
+        curl -LsSf https://astral.sh/uv/install.sh | sh && break; \
+        if [ "$attempt" -eq 3 ]; then exit 1; fi; \
+        echo "uv install script failed, retrying ($attempt/3)..." >&2; \
+        sleep 3; \
+      done; \
+    fi; \
     rm -rf /var/lib/apt/lists/*
 
 ENV PATH="/usr/local/go/bin:/root/.local/bin:${PATH}"
@@ -73,7 +93,9 @@ RUN set -eux; \
       if [ "$attempt" -eq 3 ]; then exit 1; fi; \
       echo "pip install requirements failed, retrying ($attempt/3)..." >&2; \
       sleep 5; \
-    done; \
+    done
+
+RUN set -eux; \
     if [ "$SKIP_PLAYWRIGHT_INSTALL" != "1" ]; then \
       installed=0; \
       for attempt in 1 2 3; do \
@@ -86,13 +108,17 @@ RUN set -eux; \
         sleep 5; \
       done; \
       [ "$installed" -eq 1 ]; \
-    fi; \
-    for attempt in 1 2 3; do \
-      CAMOUFOX_VERSION="$CAMOUFOX_VERSION" CAMOUFOX_RELEASE="$CAMOUFOX_RELEASE" python /tmp/install_camoufox.py && break; \
-      if [ "$attempt" -eq 3 ]; then exit 1; fi; \
-      echo "camoufox install failed, retrying ($attempt/3)..." >&2; \
-      sleep 5; \
-    done
+    fi
+
+RUN set -eux; \
+    if [ "$SKIP_CAMOUFOX_INSTALL" != "1" ]; then \
+      for attempt in 1 2 3; do \
+        CAMOUFOX_VERSION="$CAMOUFOX_VERSION" CAMOUFOX_RELEASE="$CAMOUFOX_RELEASE" python /tmp/install_camoufox.py && break; \
+        if [ "$attempt" -eq 3 ]; then exit 1; fi; \
+        echo "camoufox install failed, retrying ($attempt/3)..." >&2; \
+        sleep 5; \
+      done; \
+    fi
 
 COPY . .
 COPY --from=frontend-builder /app/static /app/static

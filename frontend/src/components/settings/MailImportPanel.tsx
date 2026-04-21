@@ -249,6 +249,11 @@ export default function MailImportPanel({ form }: MailImportPanelProps) {
   const [gmailBridgeBaseUrl, setGmailBridgeBaseUrl] = useState('http://gmail-bridge:9090')
   const [generatingGmailTemplate, setGeneratingGmailTemplate] = useState(false)
   const [authorizingGoogle, setAuthorizingGoogle] = useState(false)
+  const [gmailTestAliasEmail, setGmailTestAliasEmail] = useState('')
+  const [gmailTestKeyword, setGmailTestKeyword] = useState('OpenAI')
+  const [gmailTestMaxAgeMinutes, setGmailTestMaxAgeMinutes] = useState(20)
+  const [testingGmailOtp, setTestingGmailOtp] = useState(false)
+  const [gmailOtpTestResult, setGmailOtpTestResult] = useState<{ ok: boolean; message: string } | null>(null)
 
   const providerMap = useMemo(
     () => new Map(providers.map((provider) => [provider.type, provider])),
@@ -436,24 +441,28 @@ export default function MailImportPanel({ form }: MailImportPanelProps) {
     }
   }
 
-  const handleStartGoogleOAuth = () => {
+  const resolveBrowserBridgeBaseUrl = () => {
     const rawBaseUrl = String(gmailBridgeBaseUrl || '').trim().replace(/\/$/, '')
     if (!rawBaseUrl.startsWith('http://') && !rawBaseUrl.startsWith('https://')) {
       message.error('Bridge 地址格式无效，请以 http:// 或 https:// 开头')
-      return
+      return ''
     }
 
-    let browserBaseUrl = rawBaseUrl
     try {
       const parsed = new URL(rawBaseUrl)
       if (parsed.hostname === 'gmail-bridge') {
         parsed.hostname = window.location.hostname || '127.0.0.1'
-        browserBaseUrl = parsed.toString().replace(/\/$/, '')
       }
+      return parsed.toString().replace(/\/$/, '')
     } catch {
-      message.error('Bridge 地址格式无效，无法发起授权')
-      return
+      message.error('Bridge 地址格式无效，无法连接 Gmail Bridge')
+      return ''
     }
+  }
+
+  const handleStartGoogleOAuth = () => {
+    const browserBaseUrl = resolveBrowserBridgeBaseUrl()
+    if (!browserBaseUrl) return
 
     const redirectUri = `${browserBaseUrl}/auth/callback`
     const authUrl = `${browserBaseUrl}/auth/start?redirect_uri=${encodeURIComponent(redirectUri)}`
@@ -475,6 +484,53 @@ export default function MailImportPanel({ form }: MailImportPanelProps) {
         setAuthorizingGoogle(false)
       }
     }, 2500)
+  }
+
+  const handleTestGmailOtp = async () => {
+    const aliasEmail = String(gmailTestAliasEmail || '').trim().toLowerCase()
+    if (!aliasEmail || !aliasEmail.includes('@')) {
+      message.warning('请先填写要测试的 Gmail 别名邮箱')
+      return
+    }
+
+    const browserBaseUrl = resolveBrowserBridgeBaseUrl()
+    if (!browserBaseUrl) return
+
+    setTestingGmailOtp(true)
+    setGmailOtpTestResult(null)
+    try {
+      const params = new URLSearchParams({
+        to: aliasEmail,
+        kw: String(gmailTestKeyword || '').trim() || 'OpenAI',
+        max_age_minutes: String(Math.max(1, Math.min(60, Number(gmailTestMaxAgeMinutes || 20)))),
+      })
+
+      const response = await fetch(`${browserBaseUrl}/otp?${params.toString()}`)
+      const bodyText = (await response.text()).trim()
+
+      if (!response.ok) {
+        let detail = bodyText
+        try {
+          const payload = JSON.parse(bodyText) as { detail?: string }
+          detail = payload.detail || bodyText
+        } catch {
+          // ignore parse error and fallback to raw text
+        }
+        setGmailOtpTestResult({ ok: false, message: `收码失败：${detail || '未知错误'}` })
+        return
+      }
+
+      if (/^\d{6}$/.test(bodyText)) {
+        setGmailOtpTestResult({ ok: true, message: `收码成功：${bodyText}` })
+      } else {
+        setGmailOtpTestResult({ ok: false, message: '未取到验证码（可能邮件尚未到达或关键词不匹配）' })
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : '请求失败'
+      setGmailOtpTestResult({ ok: false, message: `收码失败：${detail}` })
+    } finally {
+      setTestingGmailOtp(false)
+    }
   }
 
   const handleDelete = async (item: MailImportSnapshotItem) => {
@@ -817,6 +873,37 @@ export default function MailImportPanel({ form }: MailImportPanelProps) {
                 Google 登录授权
               </Button>
             </Space>
+            <Space wrap>
+              <Input
+                style={{ width: 320 }}
+                placeholder="真实收码测试邮箱（例如 name+u001@gmail.com）"
+                value={gmailTestAliasEmail}
+                onChange={(event) => setGmailTestAliasEmail(event.target.value)}
+              />
+              <Input
+                style={{ width: 200 }}
+                placeholder="测试关键词（默认 OpenAI）"
+                value={gmailTestKeyword}
+                onChange={(event) => setGmailTestKeyword(event.target.value)}
+              />
+              <InputNumber
+                min={1}
+                max={60}
+                value={gmailTestMaxAgeMinutes}
+                onChange={(value) => setGmailTestMaxAgeMinutes(Math.max(1, Math.min(60, Number(value || 20))))}
+                addonBefore="邮件时效(分钟)"
+              />
+              <Button onClick={() => void handleTestGmailOtp()} loading={testingGmailOtp}>
+                真实收码验证
+              </Button>
+            </Space>
+            {gmailOtpTestResult ? (
+              <Alert
+                type={gmailOtpTestResult.ok ? 'success' : 'warning'}
+                showIcon
+                message={gmailOtpTestResult.message}
+              />
+            ) : null}
           </div>
         ) : null}
 
