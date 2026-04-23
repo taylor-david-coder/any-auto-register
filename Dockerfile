@@ -68,7 +68,11 @@ RUN set -eux; \
     apt-get -o Acquire::Retries=5 -o Acquire::ForceIPv4=true install -y --no-install-recommends curl ca-certificates xvfb xauth; \
     if [ "$SKIP_PLAYWRIGHT_INSTALL" != "1" ] || [ "$SKIP_CAMOUFOX_INSTALL" != "1" ]; then \
       apt-get -o Acquire::Retries=5 -o Acquire::ForceIPv4=true install -y --no-install-recommends \
-        libgtk-3-0 libx11-xcb1 libasound2; \
+        libglib2.0-0 libgtk-3-0 libx11-xcb1 libasound2 \
+        libnss3 libnspr4 libatk-bridge2.0-0 libcups2 libdrm2 libdbus-1-3 \
+        libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+        libgbm1 libpango-1.0-0 libcairo2 libatspi2.0-0 libxshmfence1 \
+        fonts-liberation; \
       for attempt in 1 2 3; do \
         curl -fsSL https://go.dev/dl/go1.24.2.linux-amd64.tar.gz | tar -C /usr/local -xz && break; \
         if [ "$attempt" -eq 3 ]; then exit 1; fi; \
@@ -98,14 +102,25 @@ RUN set -eux; \
 RUN set -eux; \
     if [ "$SKIP_PLAYWRIGHT_INSTALL" != "1" ]; then \
       installed=0; \
-      for attempt in 1 2 3; do \
-        if python -m playwright install chromium firefox; then \
-          installed=1; \
-          break; \
+      pw_hosts="${PLAYWRIGHT_DOWNLOAD_HOST:-} https://cdn.playwright.dev https://playwright.download.prss.microsoft.com/dbazure/download/playwright"; \
+      for pw_host in $pw_hosts; do \
+        if [ -n "$pw_host" ]; then \
+          export PLAYWRIGHT_DOWNLOAD_HOST="$pw_host"; \
+          echo "playwright install host: $PLAYWRIGHT_DOWNLOAD_HOST"; \
+        else \
+          unset PLAYWRIGHT_DOWNLOAD_HOST || true; \
+          echo "playwright install host: default"; \
         fi; \
-        if [ "$attempt" -eq 3 ]; then break; fi; \
-        echo "playwright browser install failed, retrying ($attempt/3)..." >&2; \
-        sleep 5; \
+        for attempt in 1 2; do \
+          if python -m playwright install chromium firefox; then \
+            installed=1; \
+            break; \
+          fi; \
+          if [ "$attempt" -eq 2 ]; then break; fi; \
+          echo "playwright browser install failed, retrying ($attempt/2) on host ${pw_host:-default}..." >&2; \
+          sleep 5; \
+        done; \
+        if [ "$installed" -eq 1 ]; then break; fi; \
       done; \
       [ "$installed" -eq 1 ]; \
     fi

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import uuid
 from pathlib import Path
@@ -282,6 +283,76 @@ def _get_sentinel_token_via_quickjs(
             pass
 
 
+def _install_playwright_chromium(logger: Callable[[str], None], timeout_ms: int) -> bool:
+    """在运行时尝试安装 Playwright Chromium（用于容器漏装时自愈）。"""
+    logger("Sentinel Browser 检测到 Chromium 未安装，尝试自动安装")
+
+    host_candidates: list[str | None] = []
+    custom_host = str(os.getenv("PLAYWRIGHT_DOWNLOAD_HOST") or "").strip()
+    if custom_host:
+        host_candidates.append(custom_host)
+    host_candidates.extend(
+        [
+            "https://cdn.playwright.dev",
+            "https://playwright.download.prss.microsoft.com/dbazure/download/playwright",
+            None,
+        ]
+    )
+
+    timeout_s = max(60, int(timeout_ms / 1000))
+    for host in host_candidates:
+        env = dict(os.environ)
+        if host:
+            env["PLAYWRIGHT_DOWNLOAD_HOST"] = host
+            logger(f"Sentinel Browser 自动安装 Chromium: host={host}")
+        else:
+            env.pop("PLAYWRIGHT_DOWNLOAD_HOST", None)
+            logger("Sentinel Browser 自动安装 Chromium: host=default")
+
+        try:
+            process = subprocess.run(
+                [sys.executable, "-m", "playwright", "install", "chromium"],
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+                check=False,
+                env=env,
+            )
+        except Exception as e:
+            logger(f"Sentinel Browser 自动安装 Chromium 异常: {e}")
+            continue
+
+        if process.returncode == 0:
+            logger("Sentinel Browser 自动安装 Chromium 成功")
+            return True
+
+        stderr = (process.stderr or "").strip()
+        stdout = (process.stdout or "").strip()
+        detail = stderr or stdout or f"exit={process.returncode}"
+        logger(f"Sentinel Browser 自动安装 Chromium 失败: {detail}")
+
+    return False
+
+
+def _launch_chromium_with_retry(
+    playwright_obj: Any,
+    launch_args: dict[str, Any],
+    *,
+    logger: Callable[[str], None],
+    timeout_ms: int,
+) -> Any:
+    """启动 Chromium，若二进制缺失则安装后重试一次。"""
+    try:
+        return playwright_obj.chromium.launch(**launch_args)
+    except Exception as e:
+        message = str(e)
+        if "Executable doesn't exist" not in message:
+            raise
+        if not _install_playwright_chromium(logger, timeout_ms):
+            raise
+        return playwright_obj.chromium.launch(**launch_args)
+
+
 def get_sentinel_token_via_browser(
     *,
     flow: str,
@@ -332,7 +403,12 @@ def get_sentinel_token_via_browser(
     logger(f"Sentinel Browser 启动: flow={flow}, url={target_url}")
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(**launch_args)
+        browser = _launch_chromium_with_retry(
+            p,
+            launch_args,
+            logger=logger,
+            timeout_ms=timeout_ms,
+        )
         try:
             context = browser.new_context(
                 viewport={"width": 1440, "height": 900},

@@ -1,6 +1,8 @@
 """Playwright 执行器 - 支持 headless/headed 模式"""
 
 import logging
+import subprocess
+import sys
 from typing import Any
 
 from ..base_executor import BaseExecutor, Response
@@ -9,6 +11,20 @@ from ..proxy_utils import build_playwright_proxy_config
 
 
 logger = logging.getLogger(__name__)
+
+
+def _is_browser_missing_error(exc: Exception) -> bool:
+    msg = str(exc)
+    return "Executable doesn't exist" in msg and "playwright install" in msg
+
+
+def _install_playwright_chromium() -> None:
+    # 使用当前解释器安装浏览器，避免跨环境安装到错误目录。
+    cmd = [sys.executable, "-m", "playwright", "install", "chromium"]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()
+        raise RuntimeError(f"Playwright Chromium 安装失败，请手动执行 {' '.join(cmd)}。错误: {err}")
 
 
 class PlaywrightExecutor(BaseExecutor):
@@ -38,7 +54,15 @@ class PlaywrightExecutor(BaseExecutor):
             proxy_cfg = build_playwright_proxy_config(self.proxy)
             if proxy_cfg:
                 launch_opts["proxy"] = proxy_cfg
-        self._browser = self._pw.chromium.launch(**launch_opts)
+
+        try:
+            self._browser = self._pw.chromium.launch(**launch_opts)
+        except Exception as exc:
+            if not _is_browser_missing_error(exc):
+                raise
+            logger.warning("检测到 Playwright Chromium 未安装，尝试自动安装后重试。")
+            _install_playwright_chromium()
+            self._browser = self._pw.chromium.launch(**launch_opts)
         self._context = self._browser.new_context()
         self._page = self._context.new_page()
 

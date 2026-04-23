@@ -80,7 +80,7 @@ Based on the current frontend code and UI, the **platforms displayed by default 
 ## Requirements
 
 - Python 3.12+
-- Node.js 18+
+- Node.js 20.19+ (or 22.12+)
 - Conda (recommended)
 - Windows (recommended for using the included startup scripts directly)
 
